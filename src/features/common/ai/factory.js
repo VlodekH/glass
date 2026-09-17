@@ -33,9 +33,10 @@ const PROVIDERS = {
           { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
       ],
       sttModels: [
-          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe (Low Cost)' },
-          { id: 'gpt-4o-transcribe', name: 'GPT-4o Transcribe (Higher Accuracy)' },
-          { id: 'gpt-transcribe', name: 'GPT Transcribe (Current)' },
+          { id: 'gpt-live-transcribe', name: 'GPT Live Transcribe (Recommended)' },
+          { id: 'gpt-transcribe', name: 'GPT Transcribe (Committed Turns)' },
+          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe (Legacy / Low Cost)' },
+          { id: 'gpt-4o-transcribe', name: 'GPT-4o Transcribe (Legacy / Higher Accuracy)' },
       ],
   },
 

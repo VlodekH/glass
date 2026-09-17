@@ -63,7 +63,9 @@ class ListenService {
                 case 'Listen':
                     console.log('[ListenService] changeSession to "Listen"');
                     internalBridge.emit('window:requestVisibility', { name: 'listen', visible: true });
-                    await this.initializeSession();
+                    if (!await this.initializeSession()) {
+                        throw new Error('Failed to initialize transcription. Check the selected STT model and API access.');
+                    }
                     if (listenWindow && !listenWindow.isDestroyed()) {
                         listenWindow.webContents.send('session-state-changed', { isActive: true });
                     }
@@ -154,7 +156,7 @@ class ListenService {
         }
     }
 
-    async initializeSession(language = 'en') {
+    async initializeSession(language = null) {
         if (this.isInitializingSession) {
             console.log('Session initialization already in progress.');
             return false;
@@ -164,6 +166,7 @@ class ListenService {
         this.sendToRenderer('session-initializing', true);
         this.sendToRenderer('update-status', 'Initializing sessions...');
 
+        let initialized = false;
         try {
             // Initialize database session
             const sessionInitialized = await this.initializeNewSession();
@@ -196,7 +199,7 @@ class ListenService {
             console.log('✅ Listen service initialized successfully.');
             
             this.sendToRenderer('update-status', 'Connected. Ready to listen.');
-            
+            initialized = true;
             return true;
         } catch (error) {
             console.error('❌ Failed to initialize listen service:', error);
@@ -205,7 +208,7 @@ class ListenService {
         } finally {
             this.isInitializingSession = false;
             this.sendToRenderer('session-initializing', false);
-            this.sendToRenderer('change-listen-capture-state', { status: "start" });
+            this.sendToRenderer('change-listen-capture-state', { status: initialized ? 'start' : 'stop' });
         }
     }
 

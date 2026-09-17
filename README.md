@@ -78,7 +78,7 @@ npm run setup
 3. Paste your OpenAI API key in the LLM field. Glass reuses it for STT, so the second key field can stay empty.
 4. Confirm the setup. Your key is encrypted before it is stored in the local SQLite database.
 
-An API key is separate from a ChatGPT subscription. The OpenAI API project must have billing/credits and permission to use both Chat Completions and Realtime transcription. Existing installations can remain on `gpt-4.1`; new setups can choose a current model from the menu. Live transcription defaults to `gpt-4o-mini-transcribe`.
+An API key is separate from a ChatGPT subscription. The OpenAI API project must have billing/credits and permission to use both Chat Completions and Realtime transcription. Existing installations can remain on `gpt-4.1`; new setups can choose a current model from the menu. For live transcription, select `gpt-live-transcribe`; language detection is automatic unless `OPENAI_TRANSCRIBE_LANG` is set.
 
 The model menu includes current OpenAI families plus stable low-cost fallbacks. Availability still depends on the models enabled for your OpenAI project. For live interview assistance, start with `gpt-5.6-luna`; use `gpt-5.6-terra` for stronger answers or `gpt-6-astra` when quality matters more than cost and latency.
 

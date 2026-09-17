@@ -2,6 +2,8 @@ const OpenAI = require('openai');
 const WebSocket = require('ws');
 
 const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
+const OPENAI_REALTIME_URL = 'wss://api.openai.com/v1/realtime';
+const STT_SESSION_READY_TIMEOUT_MS = 15000;
 
 function normalizeApiKey(key) {
   return typeof key === 'string' ? key.trim() : '';
@@ -37,6 +39,51 @@ async function getApiError(response, providerName = 'OpenAI') {
   error.code = errorData.error?.code;
   error.type = errorData.error?.type;
   return error;
+}
+
+function buildTranscriptionSessionUpdate({
+  model = 'gpt-live-transcribe',
+  language,
+  prompt = '',
+} = {}) {
+  const transcription = { model };
+  if (prompt) transcription.prompt = prompt;
+
+  // The live model accepts a list of expected languages. Older transcription
+  // models use the singular language hint. Omit both to enable auto-detection.
+  if (language) {
+    if (model === 'gpt-live-transcribe') {
+      transcription.languages = [language];
+      transcription.delay = 'low';
+    } else {
+      transcription.language = language;
+    }
+  }
+
+  return {
+    type: 'session.update',
+    session: {
+      type: 'transcription',
+      audio: {
+        input: {
+          format: {
+            type: 'audio/pcm',
+            rate: 24000,
+          },
+          transcription,
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500,
+          },
+          noise_reduction: {
+            type: 'near_field',
+          },
+        },
+      },
+    },
+  };
 }
 
 
@@ -86,13 +133,13 @@ class OpenAIProvider {
  * @param {string} [opts.portkeyVirtualKey] - Portkey virtual key
  * @returns {Promise<object>} STT session
  */
-async function createSTT({ apiKey, model = 'gpt-4o-mini-transcribe', language = 'en', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
+async function createSTT({ apiKey, model = 'gpt-live-transcribe', language, callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
   const keyType = usePortkey ? 'vKey' : 'apiKey';
   const key = normalizeApiKey(usePortkey ? (portkeyVirtualKey || apiKey) : apiKey);
 
   const wsUrl = keyType === 'apiKey'
-    ? 'wss://api.openai.com/v1/realtime?intent=transcription'
-    : 'wss://api.portkey.ai/v1/realtime?intent=transcription';
+    ? OPENAI_REALTIME_URL
+    : 'wss://api.portkey.ai/v1/realtime';
 
   const headers = keyType === 'apiKey'
     ? {
@@ -108,93 +155,95 @@ async function createSTT({ apiKey, model = 'gpt-4o-mini-transcribe', language = 
   const ws = new WebSocket(wsUrl, { headers });
 
   return new Promise((resolve, reject) => {
-    ws.onopen = () => {
-      console.log("WebSocket session opened.");
+    let settled = false;
+    const readyTimeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      ws.close();
+      reject(new Error('OpenAI transcription session did not become ready in time.'));
+    }, STT_SESSION_READY_TIMEOUT_MS);
 
-      const sessionConfig = {
-        type: 'transcription_session.update',
-        session: {
-          input_audio_format: 'pcm16',
-          input_audio_transcription: {
-            model,
-            prompt: config.prompt || '',
-            language: language || 'en'
-          },
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 200,
-            silence_duration_ms: 100,
-          },
-          input_audio_noise_reduction: {
-            type: 'near_field'
-          }
-        }
-      };
-      
-      ws.send(JSON.stringify(sessionConfig));
-
-      // Helper to periodically keep the websocket alive
-      const keepAlive = () => {
-        try {
-          if (ws.readyState === WebSocket.OPEN) {
-            // The ws library supports native ping frames which are ideal for heart-beats
-            ws.ping();
-          }
-        } catch (err) {
-          console.error('[OpenAI STT] keepAlive error:', err.message);
-        }
-      };
-
-      resolve({
-        sendRealtimeInput: (audioData) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            const message = {
-              type: 'input_audio_buffer.append',
-              audio: audioData
-            };
-            ws.send(JSON.stringify(message));
-          }
-        },
-        // Expose keepAlive so higher-level services can schedule heart-beats
-        keepAlive,
-        close: () => {
-          ws.onmessage = ws.onerror = () => {};
-          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-            ws.close(1000, 'Client initiated close.');
-          }
-        }
-      });
+    const finishWithError = error => {
+      callbacks.onerror?.(error);
+      if (!settled) {
+        settled = true;
+        clearTimeout(readyTimeout);
+        reject(error);
+      }
     };
 
-    ws.onmessage = (event) => {
+    const createSessionHandle = () => ({
+      sendRealtimeInput: audioData => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          throw new Error('OpenAI transcription session is not connected.');
+        }
+        ws.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: audioData,
+        }));
+      },
+      keepAlive: () => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      },
+      close: () => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1000, 'Client initiated close.');
+        }
+      },
+    });
+
+    ws.on('open', () => {
+      console.log('[OpenAI STT] WebSocket connected; configuring transcription session.');
+      ws.send(JSON.stringify(buildTranscriptionSessionUpdate({
+        model,
+        language,
+        prompt: config.prompt || '',
+      })));
+    });
+
+    ws.on('message', data => {
       // ── 종료·하트비트 패킷 필터링 ──────────────────────────────
-      if (!event.data || event.data === 'null' || event.data === '[DONE]') return;
+      const raw = data?.toString();
+      if (!raw || raw === 'null' || raw === '[DONE]') return;
 
       let msg;
-      try { msg = JSON.parse(event.data); }
+      try { msg = JSON.parse(raw); }
       catch { return; }                       // JSON 파싱 실패 무시
 
       if (!msg || typeof msg !== 'object') return;
 
+      if (msg.type === 'error' || msg.error) {
+        const apiError = msg.error || msg;
+        const error = new Error(apiError.message || 'OpenAI transcription session error.');
+        error.code = apiError.code;
+        finishWithError(error);
+        return;
+      }
+
+      if (!settled && (msg.type === 'session.updated' || msg.type === 'transcription_session.updated')) {
+        settled = true;
+        clearTimeout(readyTimeout);
+        console.log(`[OpenAI STT] Transcription session ready with model ${model}.`);
+        resolve(createSessionHandle());
+      }
+
       msg.provider = 'openai';                // ← 항상 명시
       callbacks.onmessage?.(msg);
-    };
+    });
 
-    ws.onerror = (error) => {
+    ws.on('error', error => {
       console.error('WebSocket error:', error.message);
-      if (callbacks && callbacks.onerror) {
-        callbacks.onerror(error);
-      }
-      reject(error);
-    };
+      finishWithError(error);
+    });
 
-    ws.onclose = (event) => {
-      console.log(`WebSocket closed: ${event.code} ${event.reason}`);
-      if (callbacks && callbacks.onclose) {
-        callbacks.onclose(event);
+    ws.on('close', (code, reasonBuffer) => {
+      const reason = reasonBuffer?.toString() || '';
+      console.log(`WebSocket closed: ${code} ${reason}`);
+      callbacks.onclose?.({ code, reason });
+      if (!settled) {
+        finishWithError(new Error(`OpenAI transcription connection closed before setup (${code} ${reason}).`));
       }
-    };
+    });
   });
 }
 
@@ -348,6 +397,7 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
 module.exports = {
     OpenAIProvider,
     buildChatCompletionRequest,
+    buildTranscriptionSessionUpdate,
     createSTT,
     createLLM,
     createStreamingLLM

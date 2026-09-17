@@ -149,8 +149,10 @@ class SttService {
         this.theirCompletionTimer = setTimeout(() => this.flushTheirCompletion(), COMPLETION_DEBOUNCE_MS);
     }
 
-    async initializeSttSessions(language = 'en') {
-        const effectiveLanguage = process.env.OPENAI_TRANSCRIBE_LANG || language || 'en';
+    async initializeSttSessions(language = null) {
+        // Omit the language hint by default so multilingual speech is detected
+        // automatically. It can still be pinned with OPENAI_TRANSCRIBE_LANG.
+        const effectiveLanguage = process.env.OPENAI_TRANSCRIBE_LANG || language || undefined;
 
         const modelInfo = await modelStateService.getCurrentModelInfo('stt');
         if (!modelInfo || !modelInfo.apiKey) {
@@ -440,7 +442,10 @@ class SttService {
             language: effectiveLanguage,
             callbacks: {
                 onmessage: handleMyMessage,
-                onerror: error => console.error('My STT session error:', error.message),
+                onerror: error => {
+                    console.error('My STT session error:', error.message);
+                    this.onStatusUpdate?.(`Transcription error: ${error.message}`);
+                },
                 onclose: event => console.log('My STT session closed:', event.reason),
             },
         };
@@ -449,7 +454,10 @@ class SttService {
             language: effectiveLanguage,
             callbacks: {
                 onmessage: handleTheirMessage,
-                onerror: error => console.error('Their STT session error:', error.message),
+                onerror: error => {
+                    console.error('Their STT session error:', error.message);
+                    this.onStatusUpdate?.(`Transcription error: ${error.message}`);
+                },
                 onclose: event => console.log('Their STT session closed:', event.reason),
             },
         };
@@ -466,10 +474,20 @@ class SttService {
         const myOptions = { ...sttOptions, callbacks: mySttConfig.callbacks, sessionType: 'my' };
         const theirOptions = { ...sttOptions, callbacks: theirSttConfig.callbacks, sessionType: 'their' };
 
-        [this.mySttSession, this.theirSttSession] = await Promise.all([
+        const sessionResults = await Promise.allSettled([
             createSTT(this.modelInfo.provider, myOptions),
             createSTT(this.modelInfo.provider, theirOptions),
         ]);
+
+        const failedSession = sessionResults.find(result => result.status === 'rejected');
+        if (failedSession) {
+            for (const result of sessionResults) {
+                if (result.status === 'fulfilled') result.value.close?.();
+            }
+            throw failedSession.reason;
+        }
+
+        [this.mySttSession, this.theirSttSession] = sessionResults.map(result => result.value);
 
         console.log('✅ Both STT sessions initialized successfully.');
 
@@ -515,7 +533,7 @@ class SttService {
      * Gracefully tears down then recreates the STT sessions. Should be invoked
      * on a timer to avoid provider-side hard timeouts.
      */
-    async renewSessions(language = 'en') {
+    async renewSessions(language = null) {
         if (!this.isSessionActive()) {
             console.warn('[SttService] renewSessions called but no active session.');
             return;
