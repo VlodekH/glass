@@ -613,10 +613,11 @@ export class SettingsView extends LitElement {
         this.isLoading = true;
         try {
             // Load essential data first
-            const [userState, modelSettings, presets, contentProtection, shortcuts] = await Promise.all([
+            const [userState, modelSettings, presets, activePreset, contentProtection, shortcuts] = await Promise.all([
                 window.api.settingsView.getCurrentUser(),
                 window.api.settingsView.getModelSettings(), // Facade call
                 window.api.settingsView.getPresets(),
+                window.api.settingsView.getActivePreset(),
                 window.api.settingsView.getContentProtectionStatus(),
                 window.api.settingsView.getCurrentShortcuts()
             ]);
@@ -636,10 +637,7 @@ export class SettingsView extends LitElement {
             this.presets = presets || [];
             this.isContentProtectionOn = contentProtection;
             this.shortcuts = shortcuts || {};
-            if (this.presets.length > 0) {
-                const firstUserPreset = this.presets.find(p => p.is_default === 0);
-                if (firstUserPreset) this.selectedPreset = firstUserPreset;
-            }
+            this.selectedPreset = activePreset || null;
             
             // Load LocalAI status asynchronously to improve initial load time
             this.loadLocalAIStatus();
@@ -1089,9 +1087,14 @@ export class SettingsView extends LitElement {
     }
 
     async handlePresetSelect(preset) {
+        const result = await window.api.settingsView.setActivePreset(preset.id);
+        if (!result.success) {
+            console.error('Failed to select preset:', result.error);
+            return;
+        }
+
         this.selectedPreset = preset;
-        // Here you could implement preset application logic
-        console.log('Selected preset:', preset);
+        console.log('Active preset:', preset.title);
     }
 
     handleMoveLeft() {

@@ -22,10 +22,20 @@ const PROVIDERS = {
       name: 'OpenAI',
       handler: () => require("./providers/openai"),
       llmModels: [
-          { id: 'gpt-4.1', name: 'GPT-4.1' },
+          { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna (Fast / Low Cost)' },
+          { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra (Balanced)' },
+          { id: 'gpt-5.6', name: 'GPT-5.6 (Best Standard)' },
+          { id: 'gpt-6-astra', name: 'GPT-6 Astra (Maximum Quality)' },
+          { id: 'chat-latest', name: 'Chat Latest (Auto-updating)' },
+          { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+          { id: 'gpt-4.1', name: 'GPT-4.1 (Legacy Stable)' },
+          { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
+          { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
       ],
       sttModels: [
-          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe' }
+          { id: 'gpt-4o-mini-transcribe', name: 'GPT-4o Mini Transcribe (Low Cost)' },
+          { id: 'gpt-4o-transcribe', name: 'GPT-4o Transcribe (Higher Accuracy)' },
+          { id: 'gpt-transcribe', name: 'GPT Transcribe (Current)' },
       ],
   },
 

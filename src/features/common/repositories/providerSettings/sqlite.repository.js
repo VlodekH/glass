@@ -33,6 +33,10 @@ function upsert(provider, settings) {
     }
     
     const db = sqliteClient.getDb();
+    let storedApiKey = settings.api_key || null;
+    if (storedApiKey && !encryptionService.looksEncrypted(storedApiKey)) {
+        storedApiKey = encryptionService.encrypt(storedApiKey);
+    }
     
     // Use SQLite's UPSERT syntax (INSERT ... ON CONFLICT ... DO UPDATE)
     const stmt = db.prepare(`
@@ -49,7 +53,7 @@ function upsert(provider, settings) {
     
     const result = stmt.run(
         provider,
-        settings.api_key || null,
+        storedApiKey,
         settings.selected_llm_model || null,
         settings.selected_stt_model || null,
         0, // is_active_llm - always 0, use setActiveProvider to activate
@@ -157,4 +161,4 @@ module.exports = {
     getActiveProvider,
     setActiveProvider,
     getActiveSettings
-}; 
+};

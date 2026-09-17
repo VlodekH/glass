@@ -15,6 +15,7 @@ const getWindowPool = () => {
 const sessionRepository = require('../common/repositories/session');
 const askRepository = require('./repositories');
 const { getSystemPrompt } = require('../common/prompts/promptBuilder');
+const settingsService = require('../settings/settingsService');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('os');
@@ -253,8 +254,13 @@ class AskService {
             const screenshotBase64 = screenshotResult.success ? screenshotResult.base64 : null;
 
             const conversationHistory = this._formatConversationForPrompt(conversationHistoryRaw);
-
-            const systemPrompt = getSystemPrompt('pickle_glass_analysis', conversationHistory, false);
+            const customPrompt = await settingsService.getActivePrompt();
+            const systemPrompt = getSystemPrompt(
+                'pickle_glass_analysis',
+                customPrompt,
+                false,
+                conversationHistory
+            );
 
             const messages = [
                 { role: 'system', content: systemPrompt },
@@ -370,6 +376,28 @@ class AskService {
     async _processStream(reader, askWin, sessionId, signal) {
         const decoder = new TextDecoder();
         let fullResponse = '';
+        let pending = '';
+
+        const processLine = line => {
+            const trimmedLine = line.trim();
+            if (!trimmedLine.startsWith('data:')) return false;
+
+            const data = trimmedLine.substring(5).trimStart();
+            if (data === '[DONE]') return true;
+
+            try {
+                const json = JSON.parse(data);
+                const token = json.choices?.[0]?.delta?.content || '';
+                if (token) {
+                    fullResponse += token;
+                    this.state.currentResponse = fullResponse;
+                    this._broadcastState();
+                }
+            } catch (error) {
+                console.warn('[AskService] Ignoring malformed SSE event:', error.message);
+            }
+            return false;
+        };
 
         try {
             this.state.isLoading = false;
@@ -379,28 +407,17 @@ class AskService {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n').filter(line => line.trim() !== '');
+                pending += decoder.decode(value, { stream: true });
+                const lines = pending.split(/\r?\n/);
+                pending = lines.pop() || '';
 
                 for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const data = line.substring(6);
-                        if (data === '[DONE]') {
-                            return; 
-                        }
-                        try {
-                            const json = JSON.parse(data);
-                            const token = json.choices[0]?.delta?.content || '';
-                            if (token) {
-                                fullResponse += token;
-                                this.state.currentResponse = fullResponse;
-                                this._broadcastState();
-                            }
-                        } catch (error) {
-                        }
-                    }
+                    if (processLine(line)) return;
                 }
             }
+
+            pending += decoder.decode();
+            if (pending && processLine(pending)) return;
         } catch (streamError) {
             if (signal.aborted) {
                 console.log(`[AskService] Stream reading was intentionally cancelled. Reason: ${signal.reason}`);

@@ -4,6 +4,7 @@ const { createLLM } = require('../../common/ai/factory');
 const sessionRepository = require('../../common/repositories/session');
 const summaryRepository = require('./repositories');
 const modelStateService = require('../../common/services/modelStateService');
+const settingsService = require('../../settings/settingsService');
 
 class SummaryService {
     constructor() {
@@ -90,8 +91,13 @@ Please build upon this context while analyzing the new conversation segments.
 `;
         }
 
-        const basePrompt = getSystemPrompt('pickle_glass_analysis', '', false);
-        const systemPrompt = basePrompt.replace('{{CONVERSATION_HISTORY}}', recentConversation);
+        const customPrompt = await settingsService.getActivePrompt();
+        const systemPrompt = getSystemPrompt(
+            'pickle_glass_analysis',
+            customPrompt,
+            false,
+            recentConversation
+        );
 
         try {
             if (this.currentSessionId) {
@@ -330,4 +336,4 @@ Keep all points concise and build upon previous analysis if provided.`,
     }
 }
 
-module.exports = SummaryService; 
+module.exports = SummaryService;

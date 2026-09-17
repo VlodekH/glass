@@ -71,6 +71,28 @@ npm run setup
 - Gemini API: Get Gemini API Key [here](https://aistudio.google.com/apikey)
 - Local LLM Ollama & Whisper
 
+### Using your own OpenAI API key
+
+1. Start Glass and choose **Use Personal API keys**.
+2. Select **OpenAI** for both LLM and STT.
+3. Paste your OpenAI API key in the LLM field. Glass reuses it for STT, so the second key field can stay empty.
+4. Confirm the setup. Your key is encrypted before it is stored in the local SQLite database.
+
+An API key is separate from a ChatGPT subscription. The OpenAI API project must have billing/credits and permission to use both Chat Completions and Realtime transcription. Existing installations can remain on `gpt-4.1`; new setups can choose a current model from the menu. Live transcription defaults to `gpt-4o-mini-transcribe`.
+
+The model menu includes current OpenAI families plus stable low-cost fallbacks. Availability still depends on the models enabled for your OpenAI project. For live interview assistance, start with `gpt-5.6-luna`; use `gpt-5.6-terra` for stronger answers or `gpt-6-astra` when quality matters more than cost and latency.
+
+### Fully local open-source setup
+
+Glass also works without a cloud LLM:
+
+```bash
+# Install Ollama from https://ollama.com/download, then pull a vision model:
+ollama pull qwen3-vl:8b
+```
+
+In Glass, select **Ollama (Local)** as the LLM provider and `qwen3-vl:8b` as the model. Select **Whisper (Local)** for speech-to-text. Vision support is important because Glass sends screenshots with questions; text-only coding models will ignore that context.
+
 ### Liquid Glass Design (coming soon)
 
 <img width="100%" alt="booking-screen" src="./public/assets/03.gif">

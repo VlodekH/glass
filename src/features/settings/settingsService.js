@@ -266,6 +266,39 @@ async function getPresets() {
     }
 }
 
+async function getActivePreset() {
+    try {
+        const [settings, presets] = await Promise.all([getSettings(), settingsRepository.getPresets()]);
+        const selectedPreset = presets.find(preset => preset.id === settings.activePresetId);
+
+        // Older versions displayed the first custom preset as selected without
+        // persisting that choice. Keep that behavior while making it functional.
+        return selectedPreset || presets.find(preset => preset.is_default === 0) || null;
+    } catch (error) {
+        console.error('[SettingsService] Error getting active preset:', error);
+        return null;
+    }
+}
+
+async function setActivePreset(presetId) {
+    try {
+        const presets = await settingsRepository.getPresets();
+        if (!presets.some(preset => preset.id === presetId)) {
+            return { success: false, error: 'Preset not found.' };
+        }
+
+        return await saveSettings({ activePresetId: presetId });
+    } catch (error) {
+        console.error('[SettingsService] Error setting active preset:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+async function getActivePrompt() {
+    const preset = await getActivePreset();
+    return preset?.prompt?.trim() || '';
+}
+
 async function getPresetTemplates() {
     try {
         const templates = await settingsRepository.getPresetTemplates();
@@ -447,6 +480,9 @@ module.exports = {
     getSettings,
     saveSettings,
     getPresets,
+    getActivePreset,
+    setActivePreset,
+    getActivePrompt,
     getPresetTemplates,
     createPreset,
     updatePreset,

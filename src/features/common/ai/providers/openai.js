@@ -1,31 +1,76 @@
 const OpenAI = require('openai');
 const WebSocket = require('ws');
-const { Portkey } = require('portkey-ai');
-const { Readable } = require('stream');
-const { getProviderForModel } = require('../factory.js');
+
+const OPENAI_API_BASE_URL = 'https://api.openai.com/v1';
+
+function normalizeApiKey(key) {
+  return typeof key === 'string' ? key.trim() : '';
+}
+
+function usesModernChatParameters(model) {
+  return /^(?:gpt-[56](?:[.-]|$)|chat-latest$|o\d(?:-|$))/i.test(model || '');
+}
+
+function buildChatCompletionRequest({ model, messages, temperature, maxTokens, stream = false }) {
+  const request = {
+    model,
+    messages,
+    stream,
+  };
+
+  if (usesModernChatParameters(model)) {
+    // Current reasoning model families reject legacy sampling parameters.
+    request.max_completion_tokens = maxTokens;
+  } else {
+    request.temperature = temperature;
+    request.max_tokens = maxTokens;
+  }
+
+  return request;
+}
+
+async function getApiError(response, providerName = 'OpenAI') {
+  const errorData = await response.json().catch(() => ({}));
+  const message = errorData.error?.message || response.statusText || 'Unknown API error';
+  const error = new Error(`${providerName} API error (${response.status}): ${message}`);
+  error.status = response.status;
+  error.code = errorData.error?.code;
+  error.type = errorData.error?.type;
+  return error;
+}
 
 
 class OpenAIProvider {
     static async validateApiKey(key) {
-        if (!key || typeof key !== 'string' || !key.startsWith('sk-')) {
+        const normalizedKey = normalizeApiKey(key);
+        if (!normalizedKey.startsWith('sk-')) {
             return { success: false, error: 'Invalid OpenAI API key format.' };
         }
 
         try {
-            const response = await fetch('https://api.openai.com/v1/models', {
-                headers: { 'Authorization': `Bearer ${key}` }
+            const response = await fetch(`${OPENAI_API_BASE_URL}/models`, {
+                headers: { 'Authorization': `Bearer ${normalizedKey}` },
+                signal: AbortSignal.timeout(15000),
             });
 
             if (response.ok) {
                 return { success: true };
-            } else {
-                const errorData = await response.json().catch(() => ({}));
-                const message = errorData.error?.message || `Validation failed with status: ${response.status}`;
-                return { success: false, error: message };
             }
+
+            const error = await getApiError(response);
+            // Restricted project keys can be valid while lacking permission to list
+            // models. Save those keys and let the actual model request report any
+            // missing Chat Completions or Realtime permission precisely.
+            if (response.status === 403) {
+                return { success: true, warning: error.message };
+            }
+            return { success: false, error: error.message };
         } catch (error) {
             console.error(`[OpenAIProvider] Network error during key validation:`, error);
-            return { success: false, error: 'A network error occurred during validation.' };
+            const message = error.name === 'TimeoutError'
+              ? 'OpenAI API key validation timed out.'
+              : 'A network error occurred during OpenAI API key validation.';
+            return { success: false, error: message };
         }
     }
 }
@@ -41,9 +86,9 @@ class OpenAIProvider {
  * @param {string} [opts.portkeyVirtualKey] - Portkey virtual key
  * @returns {Promise<object>} STT session
  */
-async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
+async function createSTT({ apiKey, model = 'gpt-4o-mini-transcribe', language = 'en', callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
   const keyType = usePortkey ? 'vKey' : 'apiKey';
-  const key = usePortkey ? (portkeyVirtualKey || apiKey) : apiKey;
+  const key = normalizeApiKey(usePortkey ? (portkeyVirtualKey || apiKey) : apiKey);
 
   const wsUrl = keyType === 'apiKey'
     ? 'wss://api.openai.com/v1/realtime?intent=transcription'
@@ -71,7 +116,7 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
         session: {
           input_audio_format: 'pcm16',
           input_audio_transcription: {
-            model: 'gpt-4o-mini-transcribe',
+            model,
             prompt: config.prompt || '',
             language: language || 'en'
           },
@@ -114,9 +159,8 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
         // Expose keepAlive so higher-level services can schedule heart-beats
         keepAlive,
         close: () => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'session.close' }));
-            ws.onmessage = ws.onerror = () => {};  // 핸들러 제거
+          ws.onmessage = ws.onerror = () => {};
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
             ws.close(1000, 'Client initiated close.');
           }
         }
@@ -166,18 +210,18 @@ async function createSTT({ apiKey, language = 'en', callbacks = {}, usePortkey =
  * @returns {object} LLM instance
  */
 function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
-  const client = new OpenAI({ apiKey });
+  const client = new OpenAI({ apiKey: normalizeApiKey(apiKey) });
   
   const callApi = async (messages) => {
     if (!usePortkey) {
-      const response = await client.chat.completions.create({
-        model: model,
-        messages: messages,
-        temperature: temperature,
-        max_tokens: maxTokens
-      });
+      const response = await client.chat.completions.create(buildChatCompletionRequest({
+        model,
+        messages,
+        temperature,
+        maxTokens,
+      }));
       return {
-        content: response.choices[0].message.content.trim(),
+        content: response.choices[0]?.message?.content?.trim() || '',
         raw: response
       };
     } else {
@@ -189,21 +233,21 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
             'x-portkey-virtual-key': portkeyVirtualKey || apiKey,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            model: model,
-            messages,
-            temperature,
-            max_tokens: maxTokens,
-        }),
+        body: JSON.stringify(buildChatCompletionRequest({
+          model,
+          messages,
+          temperature,
+          maxTokens,
+        })),
       });
 
       if (!response.ok) {
-        throw new Error(`Portkey API error: ${response.status} ${response.statusText}`);
+        throw await getApiError(response, 'Portkey');
       }
 
       const result = await response.json();
       return {
-        content: result.choices[0].message.content.trim(),
+        content: result.choices[0]?.message?.content?.trim() || '',
         raw: result
       };
     }
@@ -262,11 +306,12 @@ function createLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2
  * @returns {object} Streaming LLM instance
  */
 function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxTokens = 2048, usePortkey = false, portkeyVirtualKey, ...config }) {
+  const normalizedKey = normalizeApiKey(apiKey);
   return {
     streamChat: async (messages) => {
       const fetchUrl = usePortkey 
         ? 'https://api.portkey.ai/v1/chat/completions'
-        : 'https://api.openai.com/v1/chat/completions';
+        : `${OPENAI_API_BASE_URL}/chat/completions`;
       
       const headers = usePortkey
         ? {
@@ -275,24 +320,24 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
             'Content-Type': 'application/json',
           }
         : {
-            Authorization: `Bearer ${apiKey}`,
+            Authorization: `Bearer ${normalizedKey}`,
             'Content-Type': 'application/json',
           };
 
       const response = await fetch(fetchUrl, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          model: model,
+        body: JSON.stringify(buildChatCompletionRequest({
+          model,
           messages,
           temperature,
-          max_tokens: maxTokens,
+          maxTokens,
           stream: true,
-        }),
+        })),
       });
 
       if (!response.ok) {
-        throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+        throw await getApiError(response, usePortkey ? 'Portkey' : 'OpenAI');
       }
 
       return response;
@@ -302,7 +347,8 @@ function createStreamingLLM({ apiKey, model = 'gpt-4.1', temperature = 0.7, maxT
 
 module.exports = {
     OpenAIProvider,
+    buildChatCompletionRequest,
     createSTT,
     createLLM,
     createStreamingLLM
-}; 
+};

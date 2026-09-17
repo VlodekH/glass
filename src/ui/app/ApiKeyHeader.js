@@ -1266,6 +1266,12 @@ export class ApiKeyHeader extends LitElement {
 
     getCombinedModelSuggestions() {
         const combined = [];
+        const recommendedModels = [
+            { name: 'qwen3-vl:8b', size: '6.1 GB', description: 'Recommended: fast vision model for screenshots and code' },
+            { name: 'gemma3:12b', size: '8.1 GB', description: 'Balanced local vision model' },
+            { name: 'qwen3-vl:30b', size: '20 GB', description: 'Higher quality, slower and memory-heavy' },
+            { name: 'gemma3:4b', size: '3.3 GB', description: 'Lightweight vision fallback' },
+        ];
 
         // Add installed models first (from Ollama CLI)
         for (const model of this.modelSuggestions) {
@@ -1279,8 +1285,19 @@ export class ApiKeyHeader extends LitElement {
 
         // Add user history models that aren't already installed
         const installedNames = this.modelSuggestions.map(m => m.name);
+
+        for (const model of recommendedModels) {
+            if (!installedNames.includes(model.name)) {
+                combined.push({
+                    ...model,
+                    status: 'available',
+                    source: 'recommended',
+                });
+            }
+        }
+
         for (const modelName of this.userModelHistory) {
-            if (!installedNames.includes(modelName)) {
+            if (!installedNames.includes(modelName) && !combined.some(model => model.name === modelName)) {
                 combined.push({
                     name: modelName,
                     status: 'history',
@@ -1545,6 +1562,12 @@ export class ApiKeyHeader extends LitElement {
                 }
             }
 
+            // One OpenAI/Gemini key normally covers both LLM and STT. Reuse the
+            // first field when the same provider is selected for both jobs.
+            const effectiveSttApiKey = this.sttApiKey.trim() || (
+                this.sttProvider === this.llmProvider ? this.llmApiKey.trim() : ''
+            );
+
             // Handle STT provider
             let sttResult;
             if (this.sttProvider === 'ollama') {
@@ -1566,13 +1589,13 @@ export class ApiKeyHeader extends LitElement {
                 }
             } else {
                 // For other providers, validate API key
-                if (!this.sttApiKey.trim()) {
+                if (!effectiveSttApiKey) {
                     throw new Error('Please enter STT API key');
                 }
 
                 sttResult = await window.api.apiKeyHeader.validateKey({
                     provider: this.sttProvider,
-                    key: this.sttApiKey.trim(),
+                    key: effectiveSttApiKey,
                 });
 
                 if (sttResult.success) {
@@ -1838,7 +1861,7 @@ export class ApiKeyHeader extends LitElement {
                 ${this.getCombinedModelSuggestions().map(
                     model => html`
                         <option value=${model.name}>
-                            ${model.name} ${model.status === 'installed' ? '✓ Installed' : model.status === 'history' ? '📝 Recent' : '- Available'}
+                            ${model.name} ${model.status === 'installed' ? '✓ Installed' : model.status === 'history' ? '📝 Recent' : '- Recommended'}
                         </option>
                     `
                 )}
@@ -1924,12 +1947,13 @@ export class ApiKeyHeader extends LitElement {
         const llmNeedsModel = this.llmProvider === 'ollama';
         const sttNeedsModel = this.sttProvider === 'whisper';
 
+        const canReuseLlmKeyForStt = this.sttProvider === this.llmProvider && this.llmApiKey.trim();
         const isButtonDisabled =
             this.isLoading ||
             this.installingModel ||
             Object.keys(this.whisperInstallingModels).length > 0 ||
             (llmNeedsApiKey && !this.llmApiKey.trim()) ||
-            (sttNeedsApiKey && !this.sttApiKey.trim()) ||
+            (sttNeedsApiKey && !this.sttApiKey.trim() && !canReuseLlmKeyForStt) ||
             (llmNeedsModel && !this.selectedLlmModel?.trim()) ||
             (sttNeedsModel && !this.selectedSttModel);
 
@@ -2041,7 +2065,7 @@ export class ApiKeyHeader extends LitElement {
                                         <input
                                             type="password"
                                             class="api-input ${this.sttError ? 'invalid' : ''}"
-                                            placeholder="Enter your STT API key"
+                                            placeholder=${canReuseLlmKeyForStt ? 'Uses the same key as LLM' : 'Enter your STT API key'}
                                             .value=${this.sttApiKey}
                                             @input=${e => {
                                                 this.sttApiKey = e.target.value;

@@ -237,7 +237,7 @@ Provide only the exact words to say in **markdown format**. Focus on finding win
 
     pickle_glass_analysis: {
         intro: `<core_identity>
-    You are Pickle, developed and created by Pickle, and you are the user's live-meeting co-pilot.
+    Act as the user's discreet live-meeting co-pilot. Never introduce yourself, mention Pickle, or describe yourself as an AI assistant. Answer the user's request immediately.
     </core_identity>`,
     
         formatRequirements: `<objective>

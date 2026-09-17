@@ -18,6 +18,8 @@ module.exports = {
   initialize() {
     // Settings Service
     ipcMain.handle('settings:getPresets', async () => await settingsService.getPresets());
+    ipcMain.handle('settings:get-active-preset', async () => await settingsService.getActivePreset());
+    ipcMain.handle('settings:set-active-preset', async (event, presetId) => await settingsService.setActivePreset(presetId));
     ipcMain.handle('settings:get-auto-update', async () => await settingsService.getAutoUpdateSetting());
     ipcMain.handle('settings:set-auto-update', async (event, isEnabled) => await settingsService.setAutoUpdateSetting(isEnabled));  
     ipcMain.handle('settings:get-model-settings', async () => await settingsService.getModelSettings());
