@@ -144,12 +144,10 @@ async function createSTT({ apiKey, model = 'gpt-live-transcribe', language, call
   const headers = keyType === 'apiKey'
     ? {
         'Authorization': `Bearer ${key}`,
-        'OpenAI-Beta': 'realtime=v1',
       }
     : {
         'x-portkey-api-key': 'gRv2UGRMq6GGLJ8aVEB4e7adIewu',
         'x-portkey-virtual-key': key,
-        'OpenAI-Beta': 'realtime=v1',
       };
 
   const ws = new WebSocket(wsUrl, { headers });
