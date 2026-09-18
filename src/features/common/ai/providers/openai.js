@@ -71,12 +71,8 @@ function buildTranscriptionSessionUpdate({
             rate: 24000,
           },
           transcription,
-          turn_detection: {
-            type: 'server_vad',
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 500,
-          },
+          // gpt-live-transcribe currently requires explicit client commits.
+          turn_detection: null,
           noise_reduction: {
             type: 'near_field',
           },
@@ -136,10 +132,14 @@ class OpenAIProvider {
 async function createSTT({ apiKey, model = 'gpt-live-transcribe', language, callbacks = {}, usePortkey = false, portkeyVirtualKey, ...config }) {
   const keyType = usePortkey ? 'vKey' : 'apiKey';
   const key = normalizeApiKey(usePortkey ? (portkeyVirtualKey || apiKey) : apiKey);
+  // Transcription sessions are selected by intent. Passing a model here makes
+  // OpenAI interpret it as a voice-agent model; the STT model belongs in the
+  // session.update payload below.
+  const sessionQuery = '?intent=transcription';
 
   const wsUrl = keyType === 'apiKey'
-    ? OPENAI_REALTIME_URL
-    : 'wss://api.portkey.ai/v1/realtime';
+    ? `${OPENAI_REALTIME_URL}${sessionQuery}`
+    : `wss://api.portkey.ai/v1/realtime${sessionQuery}`;
 
   const headers = keyType === 'apiKey'
     ? {
@@ -170,25 +170,88 @@ async function createSTT({ apiKey, model = 'gpt-live-transcribe', language, call
       }
     };
 
-    const createSessionHandle = () => ({
-      sendRealtimeInput: audioData => {
-        if (ws.readyState !== WebSocket.OPEN) {
-          throw new Error('OpenAI transcription session is not connected.');
+    const createSessionHandle = () => {
+      const prefixChunks = [];
+      let prefixDurationMs = 0;
+      let speechActive = false;
+      let bufferedDurationMs = 0;
+      let silenceDurationMs = 0;
+      const prefixPaddingMs = 300;
+      const commitSilenceMs = 600;
+      const voiceThreshold = 0.005;
+
+      const getAudioStats = audioData => {
+        const pcm = Buffer.from(audioData, 'base64');
+        const sampleCount = Math.floor(pcm.length / 2);
+        if (sampleCount === 0) return { rms: 0, durationMs: 0 };
+
+        let sumSquares = 0;
+        for (let offset = 0; offset + 1 < pcm.length; offset += 2) {
+          const sample = pcm.readInt16LE(offset) / 32768;
+          sumSquares += sample * sample;
         }
+
+        return {
+          rms: Math.sqrt(sumSquares / sampleCount),
+          durationMs: (sampleCount / 24000) * 1000,
+        };
+      };
+
+      const appendAudio = audioData => {
         ws.send(JSON.stringify({
           type: 'input_audio_buffer.append',
           audio: audioData,
         }));
-      },
-      keepAlive: () => {
-        if (ws.readyState === WebSocket.OPEN) ws.ping();
-      },
-      close: () => {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close(1000, 'Client initiated close.');
-        }
-      },
-    });
+      };
+
+      return {
+        sendRealtimeInput: audioData => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            throw new Error('OpenAI transcription session is not connected.');
+          }
+
+          const { rms, durationMs } = getAudioStats(audioData);
+          const hasVoice = rms >= voiceThreshold;
+
+          if (!speechActive) {
+            if (!hasVoice) {
+              prefixChunks.push({ audioData, durationMs });
+              prefixDurationMs += durationMs;
+              while (prefixDurationMs > prefixPaddingMs && prefixChunks.length > 1) {
+                prefixDurationMs -= prefixChunks.shift().durationMs;
+              }
+              return;
+            }
+
+            speechActive = true;
+            bufferedDurationMs = prefixDurationMs;
+            for (const chunk of prefixChunks) appendAudio(chunk.audioData);
+            prefixChunks.length = 0;
+            prefixDurationMs = 0;
+          }
+
+          appendAudio(audioData);
+          bufferedDurationMs += durationMs;
+          silenceDurationMs = hasVoice ? 0 : silenceDurationMs + durationMs;
+
+          if (silenceDurationMs >= commitSilenceMs && bufferedDurationMs >= 100) {
+            console.log('[OpenAI STT] Committing completed speech turn.');
+            ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+            speechActive = false;
+            bufferedDurationMs = 0;
+            silenceDurationMs = 0;
+          }
+        },
+        keepAlive: () => {
+          if (ws.readyState === WebSocket.OPEN) ws.ping();
+        },
+        close: () => {
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(1000, 'Client initiated close.');
+          }
+        },
+      };
+    };
 
     ws.on('open', () => {
       console.log('[OpenAI STT] WebSocket connected; configuring transcription session.');
